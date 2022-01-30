@@ -1,9 +1,11 @@
-const express = require('express')
-const cors = require('cors')
-const joi = require('joi')
-const dotenv = require('dotenv')
-const dayjs = require('dayjs')
-const {MongoClient} = require('mongodb')
+import express  from 'express'
+import cors from 'cors'
+import joi from 'joi'
+import dotenv from 'dotenv'
+import dayjs from 'dayjs'
+import {MongoClient}from 'mongodb'
+import {stripHtml} from 'string-strip-html'
+
 dotenv.config()
 
 const mongoClient = new MongoClient(process.env.MONGO_URI)
@@ -25,6 +27,7 @@ const messageSchema = joi.object({
 
 app.post('/participants', async(req, res) =>{
     try{
+        req.body.name = stripHtml(req.body.name, {trimOnlySpaces: true}).result
         let validate = participantSchema.validate(req.body)
         if(validate.error){
             res.status(422).send('Envie um nome em um formato válido')
@@ -65,6 +68,7 @@ app.get('/participants', async(req, res) =>{
 
 app.post('/messages', async (req, res) =>{
     try{
+        req.headers.user = stripHtml(req.headers.user, {trimOnlySpaces: true}).result
         await mongoClient.connect()
         const db = mongoClient.db('db_api_uol')
         const user = await db.collection('participants').find({name: req.headers.user}).toArray()
@@ -73,6 +77,9 @@ app.post('/messages', async (req, res) =>{
             mongoClient.close()
             return
         }
+        req.body.to = stripHtml(req.body.to, {trimOnlySpaces: true}).result
+        req.body.text = stripHtml(req.body.text, {trimOnlySpaces: true}).result
+        req.body.type = stripHtml(req.body.type, {trimOnlySpaces: true}).result
         const validate = messageSchema.validate(req.body)
         if(validate.error){
             res.status(422).send('Formato de mensagem inválido')
@@ -116,3 +123,45 @@ app.get('/messages', async(req, res) =>{
         mongoClient.close()
     }
 })
+
+app.post('/status', async (req, res) =>{
+    try{
+        req.headers.user = stripHtml(req.headers.user).result
+        await mongoClient.connect()
+        const db = mongoClient.db('db_api_uol')
+        const user = await db.collection('participants').find({name: req.headers.user}).toArray()
+        if(user.length == 0){
+            res.sendStatus(404)
+            mongoClient.close()
+            return
+        }
+        await db.collection('participants').updateOne({name: req.headers.user},{$set: {lastStatus: Date.now()}})
+        res.sendStatus(200)
+        mongoClient.close()
+    }catch{
+        res.sendStatus(500).send('Que feio servidor! Você não pode fazer isso!')
+        mongoClient.close()
+    }
+})
+
+
+setInterval(async() => {
+    try{
+        await mongoClient.connect()
+        const db = mongoClient.db('db_api_uol')
+        const time = Date.now() - 10000
+        let leave = await db.collection('participants').find( { lastStatus: {$lt : time} } ).toArray()
+        let i = leave.length
+        while(i > 0){
+            await db.collection('messages').insertOne( {from: leave[i - 1].name, to: "Todos", text: "sai da sala...", type: "status", time: dayjs().locale('pt-br').format('HH:mm:ss')} )
+            await db.collection('participants').deleteOne( { name: leave[i - 1].name } )
+            i--
+        }
+        mongoClient.close()
+    }
+    catch(erro){
+        console.log('é com grande pesar que anuncio que essa parada que tu tentou aí deu ruim pai')
+        console.log(erro)
+        mongoClient.close()
+    }
+}, 15000)
