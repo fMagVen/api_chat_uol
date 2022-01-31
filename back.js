@@ -3,7 +3,7 @@ import cors from 'cors'
 import joi from 'joi'
 import dotenv from 'dotenv'
 import dayjs from 'dayjs'
-import {MongoClient}from 'mongodb'
+import {MongoClient, ObjectId} from 'mongodb'
 import {stripHtml} from 'string-strip-html'
 
 dotenv.config()
@@ -58,11 +58,12 @@ app.get('/participants', async(req, res) =>{
         const db = mongoClient.db('db_api_uol')
         const get = await db.collection('participants').find({}).toArray()
         res.status(200).send(get)
-        mongoClient.close()
+        await mongoClient.close()
     }
-    catch{
-        res.status(500).send('Que feio servidor! Você não pode fazer isso!')
-        mongoClient.close()
+    catch(e){
+        res.sendStatus(500)
+        console.log(e)
+        await mongoClient.close()
     }
 })
 
@@ -74,7 +75,7 @@ app.post('/messages', async (req, res) =>{
         const user = await db.collection('participants').find({name: req.headers.user}).toArray()
         if(user.length == 0){
             res.status(422).send('Participante não encontrado')
-            mongoClient.close()
+            await mongoClient.close()
             return
         }
         req.body.to = stripHtml(req.body.to, {trimOnlySpaces: true}).result
@@ -83,16 +84,17 @@ app.post('/messages', async (req, res) =>{
         const validate = messageSchema.validate(req.body)
         if(validate.error){
             res.status(422).send('Formato de mensagem inválido')
-            mongoClient.close()
+            await mongoClient.close()
             return
         }
         await db.collection('messages').insertOne( {from: req.headers.user, ...req.body, time: dayjs().locale('pt-br').format('HH:mm:ss')} )
         res.sendStatus(201)
-        mongoClient.close()
+        await mongoClient.close()
     }
-    catch{
-        res.status(500).send('Que feio servidor! Você não pode fazer isso!')
-        mongoClient.close()
+    catch(e){
+        console.log(e)
+        res.sendStatus(500)
+        await mongoClient.close()
     }
 })
 
@@ -100,10 +102,11 @@ app.get('/messages', async(req, res) =>{
     try{
         await mongoClient.connect()
         const db = mongoClient.db('db_api_uol')
-        let messages = await db.collection('messages').find( { $or: [ {from: req.headers.user}, {to: req.headers.user}, {to: "Todos"} ] } ).toArray()
+        let messages = await db.collection('messages').find( { $or: [ {from: req.headers.user}, {to: req.headers.user}, {to: "Todos"}, {type: "message"} ] } ).toArray()
         let limit = parseInt(req.query.limit)
         if(isNaN(limit) || limit < 0){
-            res.status(200).send(messages.reverse())
+            messages.reverse()
+            res.status(200).send(messages)
             mongoClient.close()
         }
         else{
@@ -114,33 +117,34 @@ app.get('/messages', async(req, res) =>{
                 i--
                 limit--
             }
+            limitedMessages.reverse()
             res.status(200).send(limitedMessages)
             mongoClient.close()
         }
     }
     catch{
-        res.sendStatus(500).send('Que feio servidor! Você não pode fazer isso!')
+        res.status(500).send('Que feio servidor! Você não pode fazer isso!')
         mongoClient.close()
     }
 })
 
 app.post('/status', async (req, res) =>{
     try{
-        req.headers.user = stripHtml(req.headers.user).result
+        let requester = stripHtml(req.headers.user, {trimOnlySpaces: true}).result
         await mongoClient.connect()
-        const db = mongoClient.db('db_api_uol')
-        const user = await db.collection('participants').find({name: req.headers.user}).toArray()
+        let db = mongoClient.db('db_api_uol')
+        let user = await db.collection('participants').find({name: requester}).toArray()
         if(user.length == 0){
             res.sendStatus(404)
-            mongoClient.close()
+            await mongoClient.close()
             return
         }
-        await db.collection('participants').updateOne({name: req.headers.user},{$set: {lastStatus: Date.now()}})
+        await db.collection('participants').updateOne({name: requester},{$set: {lastStatus: Date.now()}})
         res.sendStatus(200)
-        mongoClient.close()
+        await mongoClient.close()
     }catch{
-        res.sendStatus(500).send('Que feio servidor! Você não pode fazer isso!')
-        mongoClient.close()
+        res.sendStatus(500)
+        await mongoClient.close()
     }
 })
 
@@ -165,3 +169,75 @@ setInterval(async() => {
         mongoClient.close()
     }
 }, 15000)
+
+
+app.delete('/messages/:id', async(req, res) =>{
+    try{
+        req.headers.user = stripHtml(req.headers.user, {trimOnlySpaces: true}).result
+        req.params.id = stripHtml(req.params.id, {trimOnlySpaces: true}).result
+        await mongoClient.connect()
+        const db = mongoClient.db('db_api_uol')
+        const message = await db.collection('messages').findOne( { _id: new ObjectId(req.params.id) } )
+        if(!message){
+            res.sendStatus(404)
+            mongoClient.close()
+            return
+        }
+        if(message.from != req.headers.user){
+            res.sendStatus(401)
+            mongoClient.close()
+            return
+        }
+        await db.collection('messages').deleteOne( { _id: new ObjectId(req.params.id) } )
+        res.sendStatus(200)
+        mongoClient.close()
+    }
+    catch(e){
+        res.status(500).send('Que feio servidor! Você não pode fazer isso!')
+        console.log(e)
+        mongoClient.close()
+    }
+})
+
+app.put('/messages/:id', async(req, res) =>{
+    try{
+        req.headers.user = stripHtml(req.headers.user, {trimOnlySpaces: true}).result
+        await mongoClient.connect()
+        const db = mongoClient.db('db_api_uol')
+        const user = await db.collection('participants').find({name: req.headers.user}).toArray()
+        if(user.length == 0){
+            res.status(422).send('Participante não encontrado')
+            mongoClient.close()
+            return
+        }
+        req.body.to = stripHtml(req.body.to, {trimOnlySpaces: true}).result
+        req.body.text = stripHtml(req.body.text, {trimOnlySpaces: true}).result
+        req.body.type = stripHtml(req.body.type, {trimOnlySpaces: true}).result
+        const validate = messageSchema.validate(req.body)
+        if(validate.error){
+            res.status(422).send('Formato de mensagem inválido')
+            mongoClient.close()
+            return
+        }
+        req.params.id = stripHtml(req.params.id, {trimOnlySpaces: true}).result
+        const message = await db.collection('messages').findOne( { _id: new ObjectId(req.params.id) } )
+        if(!message){
+            res.sendStatus(404)
+            mongoClient.close()
+            return
+        }
+        if(message.from != req.headers.user){
+            res.sendStatus(401)
+            mongoClient.close()
+            return
+        }
+        await db.collection('messages').updateOne( { _id: new ObjectId(req.params.id) }, { $set: {from: req.headers.user, ...req.body, time: dayjs().locale('pt-br').format('HH:mm:ss')}} )
+        res.sendStatus(200)
+        mongoClient.close()
+    }
+    catch(e){
+        res.sendStatus(500).send('Que feio servidor! Você não pode fazer isso!')
+        console.log(e)
+        mongoClient.close()
+    }
+})
